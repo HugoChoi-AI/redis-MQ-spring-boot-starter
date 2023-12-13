@@ -10,4 +10,7 @@ public class RedisJob {
     private String streamName;
     private String consumerGroup;
     private String consumerName;
+    private String deadLetterStreamName;
+    private int retryTimesBeforeDead;
+    private String retryTimesKey ="retryTimes";
 }

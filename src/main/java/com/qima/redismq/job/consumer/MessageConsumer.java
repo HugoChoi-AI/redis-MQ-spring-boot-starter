@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qima.redismq.bean.RedisJob;
 import com.qima.redismq.config.RedisMQProperties;
 import com.qima.redismq.exception.FailedHandleMessageException;
+import com.qima.redismq.exception.ServiceNotReachableException;
 import io.lettuce.core.api.async.RedisAsyncCommands;
 import io.lettuce.core.codec.StringCodec;
 import io.lettuce.core.output.StatusOutput;
@@ -58,6 +59,8 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         try {
             handleMessage(message);
             acknowledge(message);
+        } catch (ServiceNotReachableException e) {
+            log.error("Service not reachable, will try again later by handlePendingMessage()");
         } catch (FailedHandleMessageException e) {
             log.error("Failed to handle message", e);
             increaseFailedTimes(message);
@@ -99,6 +102,9 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
                 try {
                     handleMessage(message);
                     acknowledge(message);
+                } catch (ServiceNotReachableException e) {
+                    log.error("Service not reachable, will try again later");
+                    break;
                 } catch (FailedHandleMessageException e) {
                     log.error("Failed to handle message", e);
                     increaseFailedTimes(message);
@@ -134,7 +140,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         redisTemplate.opsForHash().increment(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + message.getId(), 1);
     }
 
-    public abstract void handleMessage(MapRecord<String, String, String> message) throws FailedHandleMessageException;
+    public abstract void handleMessage(MapRecord<String, String, String> message) throws ServiceNotReachableException, FailedHandleMessageException;
 
 
 }

@@ -86,16 +86,11 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
             PendingMessages messages = opsForStream.pending(redisJob.getStreamName(), redisJob.getConsumerGroup(), Range.unbounded(), redisMQProperties.getMessagesPerPoll());
             log.info("pending message size: {}", messages.size());
             for (PendingMessage pendingMessage : messages) {
-                RedisAsyncCommands commands = (RedisAsyncCommands) Objects.requireNonNull(redisTemplate.getConnectionFactory()).getConnection().getNativeConnection();
-                CommandArgs<String, String> args = new CommandArgs<>(StringCodec.UTF8).add(redisJob.getStreamName()).add(redisJob.getConsumerGroup()).add(redisJob.getConsumerName()).add("10").add(pendingMessage.getIdAsString());
-                commands.dispatch(CommandType.XCLAIM, new StatusOutput<>(StringCodec.UTF8), args);
-                log.info("Message " + pendingMessage.getIdAsString() + " claimed by " + redisJob.getConsumerGroup() + ":" + redisJob.getConsumerName());
-                List<MapRecord<String, String, String>> messagesToProcess = opsForStream.range(redisJob.getStreamName(), Range.closed(pendingMessage.getIdAsString(), pendingMessage.getIdAsString()));
-                if (CollectionUtils.isEmpty(messagesToProcess)) {
+                MapRecord<String, String, String> message = getOneMessageById(pendingMessage.getIdAsString());
+                if (message == null) {
                     log.info("Can not find message with id: {}", pendingMessage.getIdAsString());
                     continue;
                 }
-                MapRecord<String, String, String> message = messagesToProcess.get(0);
                 if (movedToDeadLetterStream(message)) {
                     continue;
                 }
@@ -116,10 +111,21 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         }
     }
 
+    public MapRecord<String, String, String> getOneMessageById(String messageId) {
+        RedisAsyncCommands commands = (RedisAsyncCommands) Objects.requireNonNull(redisTemplate.getConnectionFactory()).getConnection().getNativeConnection();
+        CommandArgs<String, String> args = new CommandArgs<>(StringCodec.UTF8).add(redisJob.getStreamName()).add(redisJob.getConsumerGroup()).add(redisJob.getConsumerName()).add("10").add(messageId);
+        commands.dispatch(CommandType.XCLAIM, new StatusOutput<>(StringCodec.UTF8), args);
+        log.info("Message " + messageId + " claimed by " + redisJob.getConsumerGroup() + ":" + redisJob.getConsumerName());
+        List<MapRecord<String, String, String>> messagesToProcess = opsForStream.range(redisJob.getStreamName(), Range.closed(messageId, messageId));
+        return CollectionUtils.isEmpty(messagesToProcess) ? null : messagesToProcess.get(0);
+
+    }
+
     public boolean movedToDeadLetterStream(MapRecord<String, String, String> message) {
         if (-1 != redisJob.getRetryTimesBeforeDead() && StringUtils.isNotBlank(redisJob.getDeadLetterStreamName())) {
             log.info("consumer[{}] is checking if need to move message to dead letter stream", redisJob.getConsumerName());
-            int retryTimes = getFailedTimes(message);
+            int retryTimes = getRetryTimes(message.getId().getValue());
+            log.info("retry times: {}", retryTimes);
             if (retryTimes >= redisJob.getRetryTimesBeforeDead()) {
                 log.info("consumer[{}] is moving message to dead letter stream", redisJob.getConsumerName());
                 StringRecord newRecord = StreamRecords.string(message.getValue()).withStreamKey(redisJob.getDeadLetterStreamName());
@@ -131,8 +137,8 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         return false;
     }
 
-    public int getFailedTimes(MapRecord<String, String, String> message) {
-        Object nullable = redisTemplate.opsForHash().get(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + message.getId());
+    public int getRetryTimes(String messageId) {
+        Object nullable = redisTemplate.opsForHash().get(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + messageId);
         return nullable == null ? 0 : (int) nullable;
     }
 

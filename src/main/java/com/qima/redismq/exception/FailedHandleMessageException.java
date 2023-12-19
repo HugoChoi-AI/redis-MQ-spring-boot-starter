@@ -1,6 +1,6 @@
 package com.qima.redismq.exception;
 
-public class FailedHandleMessageException extends Throwable{
+public class FailedHandleMessageException extends Exception{
 
     public FailedHandleMessageException(String message) {
         super(message);

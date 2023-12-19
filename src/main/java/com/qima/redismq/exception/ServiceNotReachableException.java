@@ -1,6 +1,6 @@
 package com.qima.redismq.exception;
 
-public class ServiceNotReachableException extends Throwable{
+public class ServiceNotReachableException extends Exception{
 
     public ServiceNotReachableException(String message) {
         super(message);

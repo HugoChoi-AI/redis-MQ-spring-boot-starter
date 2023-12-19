@@ -63,7 +63,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
             log.error("Service not reachable, will try again later by handlePendingMessage()");
         } catch (FailedHandleMessageException e) {
             log.error("Failed to handle message", e);
-            increaseFailedTimes(message);
+            increaseRetryTimes(message.getId().getValue());
         } catch (Exception e) {
             log.error("error in handling message", e);
         }
@@ -77,6 +77,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
 
     public void acknowledge(MapRecord<String, String, String> message) {
         log.info("Group[{}] consumer[{}] acknowledge message: {}", redisJob.getConsumerGroup(), redisJob.getConsumerName(), message.getId());
+        clearRetryTimes(message.getId().getValue());
         redisTemplate.opsForStream().acknowledge(redisJob.getConsumerGroup(), message);
     }
 
@@ -102,7 +103,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
                     break;
                 } catch (FailedHandleMessageException e) {
                     log.error("Failed to handle message", e);
-                    increaseFailedTimes(message);
+                    increaseRetryTimes(message.getId().getValue());
                 }
             }
 
@@ -142,8 +143,12 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         return nullable == null ? 0 : (int) nullable;
     }
 
-    public void increaseFailedTimes(MapRecord<String, String, String> message) {
-        redisTemplate.opsForHash().increment(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + message.getId(), 1);
+    public void increaseRetryTimes(String messageId) {
+        redisTemplate.opsForHash().increment(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + messageId, 1);
+    }
+
+    public void clearRetryTimes(String messageId) {
+        redisTemplate.opsForHash().delete(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + messageId);
     }
 
     public abstract void handleMessage(MapRecord<String, String, String> message) throws ServiceNotReachableException, FailedHandleMessageException;

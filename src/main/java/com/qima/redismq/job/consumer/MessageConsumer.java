@@ -140,7 +140,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
 
     public int getRetryTimes(String messageId) {
         Object nullable = redisTemplate.opsForHash().get(redisJob.getRetryTimesKey(), redisJob.getConsumerGroup() + ":" + messageId);
-        return nullable == null ? 0 : (int) nullable;
+        return nullable == null ? 0 : Integer.parseInt((String) nullable);
     }
 
     public void increaseRetryTimes(String messageId) {

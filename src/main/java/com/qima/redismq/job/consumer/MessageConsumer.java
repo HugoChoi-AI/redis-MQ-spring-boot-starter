@@ -13,21 +13,34 @@ import io.lettuce.core.protocol.CommandType;
 import lombok.Getter;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Range;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.connection.stream.ByteRecord;
+import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.PendingMessages;
+import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.connection.stream.StringRecord;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.stream.StreamListener;
 import org.springframework.util.Assert;
 import org.springframework.util.CollectionUtils;
 
 import javax.annotation.PostConstruct;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public abstract class MessageConsumer implements StreamListener<String, MapRecord<String, String, String>> {
     Logger log = org.slf4j.LoggerFactory.getLogger(MessageConsumer.class);
@@ -41,7 +54,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
     protected StreamOperations<String, String, String> opsForStream;
 
 
-    public MessageConsumer(RedisMQProperties redisMQProperties, StringRedisTemplate redisTemplate) {
+    protected MessageConsumer(RedisMQProperties redisMQProperties, StringRedisTemplate redisTemplate) {
         this.redisMQProperties = redisMQProperties;
         this.redisTemplate = redisTemplate;
     }
@@ -57,6 +70,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
     public void onMessage(MapRecord<String, String, String> message) {
         log.info("consumer[{}] is working on this job: {}", redisJob.getConsumerName(), jobName);
         try {
+            claimMessages(redisJob.getStreamName(), redisJob.getConsumerGroup(), redisJob.getConsumerName(), 60, message.getId());
             handleMessage(message);
             acknowledge(message);
         } catch (ServiceNotReachableException e) {
@@ -85,26 +99,14 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         log.info("consumer[{}] is processing pending message of {}", redisJob.getConsumerName(), jobName);
         try {
             PendingMessages messages = opsForStream.pending(redisJob.getStreamName(), redisJob.getConsumerGroup(), Range.unbounded(), redisMQProperties.getMessagesPerPoll());
-            log.info("pending message size: {}", messages.size());
-            for (PendingMessage pendingMessage : messages) {
-                MapRecord<String, String, String> message = getOneMessageById(pendingMessage.getIdAsString());
-                if (message == null) {
-                    log.info("Can not find message with id: {}", pendingMessage.getIdAsString());
-                    continue;
-                }
+            log.info("got total {} pending messages.", messages.size());
+            RecordId[] ids = messages.get().map(PendingMessage::getId).toArray(RecordId[]::new);
+            List<MapRecord<String, String, String>> claimedMessages = claimMessages(redisJob.getStreamName(), redisJob.getConsumerGroup(), redisJob.getConsumerName(), 120L, ids);
+            for (MapRecord<String, String, String> message : claimedMessages) {
                 if (movedToDeadLetterStream(message)) {
                     continue;
                 }
-                try {
-                    handleMessage(message);
-                    acknowledge(message);
-                } catch (ServiceNotReachableException e) {
-                    log.error("Service not reachable, will try again later");
-                    break;
-                } catch (FailedHandleMessageException e) {
-                    log.error("Failed to handle message", e);
-                    increaseRetryTimes(message.getId().getValue());
-                }
+                onMessage(message);
             }
 
         } catch (Exception e) {
@@ -112,14 +114,14 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
         }
     }
 
-    public MapRecord<String, String, String> getOneMessageById(String messageId) {
-        RedisAsyncCommands commands = (RedisAsyncCommands) Objects.requireNonNull(redisTemplate.getConnectionFactory()).getConnection().getNativeConnection();
-        CommandArgs<String, String> args = new CommandArgs<>(StringCodec.UTF8).add(redisJob.getStreamName()).add(redisJob.getConsumerGroup()).add(redisJob.getConsumerName()).add("10").add(messageId);
-        commands.dispatch(CommandType.XCLAIM, new StatusOutput<>(StringCodec.UTF8), args);
-        log.info("Message " + messageId + " claimed by " + redisJob.getConsumerGroup() + ":" + redisJob.getConsumerName());
-        List<MapRecord<String, String, String>> messagesToProcess = opsForStream.range(redisJob.getStreamName(), Range.closed(messageId, messageId));
-        return CollectionUtils.isEmpty(messagesToProcess) ? null : messagesToProcess.get(0);
-
+    public List<MapRecord<String, String, String>> claimMessages(String key, String group, String consumer, long seconds, RecordId... ids) {
+        return redisTemplate.execute((RedisCallback<List<MapRecord<String, String, String>>>) connection -> {
+            List<ByteRecord> byteRecords = connection.streamCommands().xClaim(Objects.requireNonNull(redisTemplate.getStringSerializer().serialize(key)), group, consumer, Duration.ofSeconds(seconds), ids);
+            if (null==byteRecords){
+                return Collections.emptyList();
+            }
+            return byteRecords.stream().map(byteRecord -> byteRecord.deserialize(RedisSerializer.string())).collect(Collectors.toList());
+        });
     }
 
     public boolean movedToDeadLetterStream(MapRecord<String, String, String> message) {

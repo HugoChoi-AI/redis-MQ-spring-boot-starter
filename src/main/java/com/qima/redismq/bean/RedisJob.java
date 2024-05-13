@@ -12,5 +12,6 @@ public class RedisJob {
     private String consumerName;
     private String deadLetterStreamName;
     private int retryTimesBeforeDead;
+    private long claimSeconds;
     private String retryTimesKey ="retryTimes";
 }

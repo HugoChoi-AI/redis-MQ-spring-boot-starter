@@ -21,7 +21,6 @@ import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.data.redis.stream.StreamMessageListenerContainer;
-import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.scheduling.config.CronTask;
 import org.springframework.scheduling.config.ScheduledTaskRegistrar;
@@ -66,7 +65,7 @@ public class InitRedisMQRegistrar implements InitializingBean, SchedulingConfigu
                 .create(Objects.requireNonNull(this.redisTemplate.getConnectionFactory()), StreamMessageListenerContainer
                         .StreamMessageListenerContainerOptions
                         .builder()
-                        .batchSize(redisMQProperties.getMessagesPerPoll())
+                        .batchSize(1)
                         .pollTimeout(Duration.ofMillis(redisMQProperties.getPollTimeout()))
                         .serializer(new StringRedisSerializer())
                         .build());
@@ -134,8 +133,9 @@ public class InitRedisMQRegistrar implements InitializingBean, SchedulingConfigu
 
     @Override
     public void configureTasks(ScheduledTaskRegistrar taskRegistrar) {
-        log.info("Ready to schedule tasks...");
+        log.info("Ready to add schedule tasks...");
         cronTasks.forEach(taskRegistrar::addCronTask);
+        log.info("Schedule tasks config done!");
     }
 
     @Override

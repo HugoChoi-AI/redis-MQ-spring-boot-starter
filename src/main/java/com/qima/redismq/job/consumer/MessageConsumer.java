@@ -5,19 +5,11 @@ import com.qima.redismq.bean.RedisJob;
 import com.qima.redismq.config.RedisMQProperties;
 import com.qima.redismq.exception.FailedHandleMessageException;
 import com.qima.redismq.exception.ServiceNotReachableException;
-import io.lettuce.core.api.async.RedisAsyncCommands;
-import io.lettuce.core.codec.StringCodec;
-import io.lettuce.core.output.StatusOutput;
-import io.lettuce.core.protocol.CommandArgs;
-import io.lettuce.core.protocol.CommandType;
 import lombok.Getter;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
-import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Range;
-import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.stream.ByteRecord;
-import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.PendingMessages;
@@ -30,16 +22,12 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.stream.StreamListener;
 import org.springframework.util.Assert;
-import org.springframework.util.CollectionUtils;
 
 import javax.annotation.PostConstruct;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 public abstract class MessageConsumer implements StreamListener<String, MapRecord<String, String, String>> {
@@ -70,7 +58,6 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
     public void onMessage(MapRecord<String, String, String> message) {
         log.info("consumer[{}] is working on this job: {}", redisJob.getConsumerName(), jobName);
         try {
-            claimMessages(redisJob.getStreamName(), redisJob.getConsumerGroup(), redisJob.getConsumerName(), 60, message.getId());
             handleMessage(message);
             acknowledge(message);
         } catch (ServiceNotReachableException e) {
@@ -86,7 +73,10 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
 
     public RedisJob getRedisJob(String jobName) {
         Assert.hasText(jobName, "jobName must not be empty");
-        return redisMQProperties.getJobs().values().stream().filter(job -> job.getName().equals(jobName)).findFirst().orElseThrow(() -> new RuntimeException(String.format("job %s not found", jobName)));
+        return redisMQProperties.getJobs().values().stream()
+                .filter(job -> job.getName().equals(jobName))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException(String.format("job %s not found", jobName)));
     }
 
     public void acknowledge(MapRecord<String, String, String> message) {
@@ -98,17 +88,30 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
     public void handlePendingMessage() {
         log.info("consumer[{}] is processing pending message of {}", redisJob.getConsumerName(), jobName);
         try {
-            PendingMessages messages = opsForStream.pending(redisJob.getStreamName(), redisJob.getConsumerGroup(), Range.unbounded(), redisMQProperties.getMessagesPerPoll());
-            log.info("got total {} pending messages.", messages.size());
-            RecordId[] ids = messages.get().map(PendingMessage::getId).toArray(RecordId[]::new);
-            List<MapRecord<String, String, String>> claimedMessages = claimMessages(redisJob.getStreamName(), redisJob.getConsumerGroup(), redisJob.getConsumerName(), 120L, ids);
-            for (MapRecord<String, String, String> message : claimedMessages) {
-                if (movedToDeadLetterStream(message)) {
-                    continue;
+            PendingMessages pendingMessages = opsForStream.pending(redisJob.getStreamName(),
+                                                                   redisJob.getConsumerGroup(),
+                                                                   Range.unbounded(),
+                                                                   redisMQProperties.getMessagesPerPoll());
+            log.info("got total {} pending messages.", pendingMessages.size());
+            if (!pendingMessages.isEmpty()) {
+                for (PendingMessage pendingMessage : pendingMessages) {
+                    if (pendingMessage.getElapsedTimeSinceLastDelivery().compareTo(Duration.ofSeconds(redisJob.getClaimSeconds()))<0){
+                        log.info("Elapsed time for message[{}] is too short, skipping in this round.", pendingMessage.getId());
+                        continue;
+                    }
+                    List<MapRecord<String, String, String>> claimedMessages = claimMessages(redisJob.getStreamName(),
+                                                                                            redisJob.getConsumerGroup(),
+                                                                                            redisJob.getConsumerName(),
+                                                                                            redisJob.getClaimSeconds(), pendingMessage.getId());
+                    if (!claimedMessages.isEmpty()) {
+                        log.info("consumer[{}] claimed pending message: {}", redisJob.getConsumerName(), pendingMessage.getId());
+                        MapRecord<String, String, String> message = claimedMessages.get(0);
+                        if (!movedToDeadLetterStream(message)) {
+                            onMessage(message);
+                        }
+                    }
                 }
-                onMessage(message);
             }
-
         } catch (Exception e) {
             log.error("error in processing pending message", e);
         }
@@ -116,8 +119,10 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
 
     public List<MapRecord<String, String, String>> claimMessages(String key, String group, String consumer, long seconds, RecordId... ids) {
         return redisTemplate.execute((RedisCallback<List<MapRecord<String, String, String>>>) connection -> {
-            List<ByteRecord> byteRecords = connection.streamCommands().xClaim(Objects.requireNonNull(redisTemplate.getStringSerializer().serialize(key)), group, consumer, Duration.ofSeconds(seconds), ids);
-            if (null==byteRecords){
+            List<ByteRecord> byteRecords = connection.streamCommands().xClaim(
+                    Objects.requireNonNull(redisTemplate.getStringSerializer().serialize(key)), group, consumer,
+                    Duration.ofSeconds(seconds), ids);
+            if (null == byteRecords) {
                 return Collections.emptyList();
             }
             return byteRecords.stream().map(byteRecord -> byteRecord.deserialize(RedisSerializer.string())).collect(Collectors.toList());

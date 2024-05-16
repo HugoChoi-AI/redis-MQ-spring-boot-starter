@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.qima</groupId>
     <artifactId>redis-MQ-spring-boot-starter</artifactId>
-    <version>1.5-release</version>
+    <version>1.6-release</version>
     <name>redis-MQ-spring-boot-starter</name>
     <description>redis-MQ-spring-boot-starter</description>
     <properties>

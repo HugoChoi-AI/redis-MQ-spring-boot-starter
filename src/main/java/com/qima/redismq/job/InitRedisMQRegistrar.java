@@ -3,12 +3,6 @@ package com.qima.redismq.job;
 import com.qima.redismq.bean.RedisJob;
 import com.qima.redismq.config.RedisMQProperties;
 import com.qima.redismq.job.consumer.MessageConsumer;
-import io.lettuce.core.api.async.RedisAsyncCommands;
-import io.lettuce.core.codec.StringCodec;
-import io.lettuce.core.output.StatusOutput;
-import io.lettuce.core.protocol.CommandArgs;
-import io.lettuce.core.protocol.CommandKeyword;
-import io.lettuce.core.protocol.CommandType;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.DisposableBean;
@@ -78,7 +72,7 @@ public class InitRedisMQRegistrar implements InitializingBean, SchedulingConfigu
 
     private void initJobContainer(RedisJob job) {
         job.setConsumerName(job.getConsumerName() + "-" + instanceIdentity);
-        createConsumerGroup(job);
+        InitUtil.createConsumerGroup(redisTemplate,job);
         if (job.isEnabled()) {
             registerMessageConsumers(job);
         }
@@ -95,27 +89,6 @@ public class InitRedisMQRegistrar implements InitializingBean, SchedulingConfigu
             }
         }
         return ip;
-    }
-
-    private void createConsumerGroup(RedisJob job) {
-        try {
-            if (Boolean.FALSE.equals(redisTemplate.hasKey(job.getStreamName()))) {
-                var commands = (RedisAsyncCommands) Objects.requireNonNull(redisTemplate.getConnectionFactory())
-                        .getConnection()
-                        .getNativeConnection();
-                CommandArgs<String, String> commandArgs = new CommandArgs<>(StringCodec.UTF8)
-                        .add(CommandKeyword.CREATE)
-                        .add(job.getStreamName())
-                        .add(job.getConsumerGroup())
-                        .add("0")
-                        .add("MKSTREAM");
-                commands.dispatch(CommandType.XGROUP, new StatusOutput<>(StringCodec.UTF8), commandArgs);
-            } else {
-                redisTemplate.opsForStream().createGroup(job.getStreamName(), ReadOffset.from("0"), job.getConsumerGroup());
-            }
-        } catch (Exception e) {
-            log.info("Group:{} already exists!", job.getConsumerGroup());
-        }
     }
 
     private void registerMessageConsumers(RedisJob job) {

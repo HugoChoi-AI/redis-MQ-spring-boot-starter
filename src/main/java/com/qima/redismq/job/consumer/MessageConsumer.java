@@ -5,6 +5,7 @@ import com.qima.redismq.bean.RedisJob;
 import com.qima.redismq.config.RedisMQProperties;
 import com.qima.redismq.exception.FailedHandleMessageException;
 import com.qima.redismq.exception.ServiceNotReachableException;
+import com.qima.redismq.job.InitUtil;
 import lombok.Getter;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -88,6 +89,7 @@ public abstract class MessageConsumer implements StreamListener<String, MapRecor
     public void handlePendingMessage() {
         log.info("consumer[{}] is processing pending message of {}", redisJob.getConsumerName(), jobName);
         try {
+            InitUtil.createConsumerGroup(redisTemplate, redisJob);
             PendingMessages pendingMessages = opsForStream.pending(redisJob.getStreamName(),
                                                                    redisJob.getConsumerGroup(),
                                                                    Range.unbounded(),
